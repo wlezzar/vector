@@ -30,24 +30,35 @@ pub struct GeneratorConfig {
 #[serde(rename_all = "snake_case")]
 pub enum OutputFormat {
     #[derivative(Default)]
-    List {
+    RoundRobin {
         #[serde(default)]
         sequence: bool,
-        lines: Vec<String>,
+        items: Vec<String>,
     },
-    Nginx,
 }
 
 impl OutputFormat {
-    async fn generate(&self, config: &GeneratorConfig, shutdown: ShutdownSignal, out: Pipeline) -> Result<(), ()> {
+    async fn generate(
+        &self,
+        config: &GeneratorConfig,
+        shutdown: ShutdownSignal,
+        out: Pipeline
+    ) -> Result<(), ()> {
         match self {
-            OutputFormat::List { sequence, lines } => list_generate(config, sequence, lines, shutdown, out).await,
-            OutputFormat::Nginx => nginx_generate().await,
+            OutputFormat::RoundRobin { sequence, items } => {
+                round_robin_generate(config, sequence, items, shutdown, out).await
+            }
         }
     }
 }
 
-async fn list_generate(config: &GeneratorConfig, sequence: &bool, lines: &Vec<String>, mut shutdown: ShutdownSignal, mut out: Pipeline) -> Result<(), ()> {
+async fn round_robin_generate(
+    config: &GeneratorConfig,
+    sequence: &bool,
+    items: &Vec<String>,
+    mut shutdown: ShutdownSignal,
+    mut out: Pipeline
+) -> Result<(), ()> {
     let mut batch_interval = config
         .batch_interval
         .map(|i| interval(Duration::from_secs_f64(i)));
@@ -62,7 +73,7 @@ async fn list_generate(config: &GeneratorConfig, sequence: &bool, lines: &Vec<St
             batch_interval.next().await;
         }
 
-        let events = lines
+        let events = items
             .to_vec()
             .iter()
             .map(|line| {
@@ -87,18 +98,23 @@ async fn list_generate(config: &GeneratorConfig, sequence: &bool, lines: &Vec<St
     Ok(())
 }
 
-async fn nginx_generate() -> Result<(), ()> {
-    Ok(())
-}
-
 impl GeneratorConfig {
+    pub(self) fn generator(self, shutdown: ShutdownSignal, out: Pipeline) -> super::Source {
+        Box::new(self.inner(shutdown, out).boxed().compat())
+    }
+
     #[allow(dead_code)] // to make check-component-features pass
-    pub fn repeat(count: usize, batch_interval: Option<f64>) -> Self {
+    pub fn repeat(lines: Vec<String>, count: usize, batch_interval: Option<f64>) -> Self {
         Self {
+            lines,
             count,
             batch_interval,
             ..Self::default()
         }
+    }
+
+    async fn inner(self, shutdown: ShutdownSignal, out: Pipeline) -> Result<(), ()> {
+        self.format.generate(&self, shutdown, out).await
     }
 }
 
@@ -130,16 +146,6 @@ impl SourceConfig for GeneratorConfig {
     }
 }
 
-impl GeneratorConfig {
-    pub(self) fn generator(self, shutdown: ShutdownSignal, out: Pipeline) -> super::Source {
-        Box::new(self.inner(shutdown, out).boxed().compat())
-    }
-
-    async fn inner(self, shutdown: ShutdownSignal, out: Pipeline) -> Result<(), ()> {
-        self.format.generate(&self, shutdown, out).await
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,7 +174,7 @@ mod tests {
     async fn copies_lines() {
         let message_key = log_schema().message_key();
         let mut rx = runit(
-            r#"lines = ["one", "two"]
+            r#"format.round_robin.items = ["one", "two"]
                count = 1"#,
         )
         .await;
@@ -192,7 +198,7 @@ mod tests {
     #[tokio::test]
     async fn limits_count() {
         let mut rx = runit(
-            r#"lines = ["one", "two"]
+            r#"format.round_robin.items = ["one", "two"]
                count = 5"#,
         )
         .await;
@@ -207,9 +213,9 @@ mod tests {
     async fn adds_sequence() {
         let message_key = log_schema().message_key();
         let mut rx = runit(
-            r#"lines = ["one", "two"]
-               count = 2
-               sequence = true"#,
+            r#"format.round_robin.items = ["one", "two"]=
+               format.round_robin.sequence = true
+               count = 2"#,
         )
         .await;
 
@@ -233,7 +239,7 @@ mod tests {
     async fn obeys_batch_interval() {
         let start = Instant::now();
         let mut rx = runit(
-            r#"lines = ["one", "two"]
+            r#"format.round_robin.items = ["one", "two"]
                count = 3
                batch_interval = 1.0"#,
         )
