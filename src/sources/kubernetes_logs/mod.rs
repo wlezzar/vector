@@ -73,6 +73,9 @@ pub struct Config {
 
     /// A list of glob patterns to exclude from reading the files.
     exclude_paths_glob_patterns: Vec<PathBuf>,
+
+    /// A field to use to set the timestamp when Vector ingested the event.
+    ingestion_timestamp_field: Option<String>,
 }
 
 inventory::submit! {
@@ -138,6 +141,7 @@ struct Source {
     field_selector: String,
     label_selector: String,
     exclude_paths: Vec<glob::Pattern>,
+    ingestion_timestamp_field: Option<String>,
 }
 
 impl Source {
@@ -174,6 +178,7 @@ impl Source {
             field_selector,
             label_selector,
             exclude_paths,
+            ingestion_timestamp_field: config.ingestion_timestamp_field.clone(),
         })
     }
 
@@ -190,6 +195,7 @@ impl Source {
             field_selector,
             label_selector,
             exclude_paths,
+            ingestion_timestamp_field,
         } = self;
 
         let watcher = k8s::api_watcher::ApiWatcher::new(client, Pod::watch_pod_for_all_namespaces);
@@ -282,7 +288,8 @@ impl Source {
                         file: &file,
                         byte_size: bytes.len(),
                     });
-                    let mut event = create_event(bytes, &file);
+                    let mut event =
+                        create_event(bytes, &file, ingestion_timestamp_field.as_deref());
                     if annotator.annotate(&mut event, &file).is_none() {
                         emit!(KubernetesLogsEventAnnotationFailed { event: &event });
                     }
@@ -347,7 +354,7 @@ impl Source {
     }
 }
 
-fn create_event(line: Bytes, file: &str) -> Event {
+fn create_event(line: Bytes, file: &str, ingestion_timestamp_field: Option<&str>) -> Event {
     let mut event = Event::from(line);
 
     // Add source type.
@@ -358,6 +365,13 @@ fn create_event(line: Bytes, file: &str) -> Event {
 
     // Add file.
     event.as_mut_log().insert(FILE_KEY, file.to_owned());
+
+    // Add ingestion timestamp if requested.
+    if let Some(ingestion_timestamp_field) = ingestion_timestamp_field {
+        event
+            .as_mut_log()
+            .insert(ingestion_timestamp_field, chrono::Utc::now());
+    }
 
     event
 }
