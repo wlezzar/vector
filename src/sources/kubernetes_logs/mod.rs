@@ -75,6 +75,9 @@ pub struct Config {
     exclude_paths_glob_patterns: Vec<PathBuf>,
 
     /// A field to use to set the timestamp when Vector ingested the event.
+    /// This is useful to compute the latency between important event processing
+    /// stages, i.e. the time delta between log line was written and when it was
+    /// processed by the `kubernetes_logs` source.
     ingestion_timestamp_field: Option<String>,
 }
 
