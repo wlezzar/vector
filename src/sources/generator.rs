@@ -19,19 +19,82 @@ use tokio::time::{interval, Duration};
 #[serde(deny_unknown_fields)]
 pub struct GeneratorConfig {
     #[serde(default)]
-    sequence: bool,
-    lines: Vec<String>,
-    #[serde(default)]
     batch_interval: Option<f64>,
     #[serde(default = "usize::max_value")]
     count: usize,
+    format: OutputFormat,
+}
+
+#[derive(Clone, Debug, Derivative, Deserialize, Serialize)]
+#[derivative(Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputFormat {
+    #[derivative(Default)]
+    List {
+        #[serde(default)]
+        sequence: bool,
+        lines: Vec<String>,
+    },
+    Nginx,
+}
+
+impl OutputFormat {
+    async fn generate(&self, config: &GeneratorConfig, shutdown: ShutdownSignal, out: Pipeline) -> Result<(), ()> {
+        match self {
+            OutputFormat::List { sequence, lines } => list_generate(config, sequence, lines, shutdown, out).await,
+            OutputFormat::Nginx => nginx_generate().await,
+        }
+    }
+}
+
+async fn list_generate(config: &GeneratorConfig, sequence: &bool, lines: &Vec<String>, mut shutdown: ShutdownSignal, mut out: Pipeline) -> Result<(), ()> {
+    let mut batch_interval = config
+        .batch_interval
+        .map(|i| interval(Duration::from_secs_f64(i)));
+    let mut number: usize = 0;
+
+    for _ in 0..config.count {
+        if matches!(futures::poll!(&mut shutdown), Poll::Ready(_)) {
+            break;
+        }
+
+        if let Some(batch_interval) = &mut batch_interval {
+            batch_interval.next().await;
+        }
+
+        let events = lines
+            .to_vec()
+            .iter()
+            .map(|line| {
+                emit!(GeneratorEventProcessed);
+
+                if *sequence {
+                    number += 1;
+                    Event::from(&format!("{} {}", number, line)[..])
+                } else {
+                    Event::from(&line[..])
+                }
+            })
+            .collect::<Vec<Event>>();
+        let (sink, _) = out
+            .send_all(iter_ok(events))
+            .compat()
+            .await
+            .map_err(|error| error!(message="Error sending generated lines.", %error))?;
+        out = sink;
+    }
+
+    Ok(())
+}
+
+async fn nginx_generate() -> Result<(), ()> {
+    Ok(())
 }
 
 impl GeneratorConfig {
     #[allow(dead_code)] // to make check-component-features pass
-    pub fn repeat(lines: Vec<String>, count: usize, batch_interval: Option<f64>) -> Self {
+    pub fn repeat(count: usize, batch_interval: Option<f64>) -> Self {
         Self {
-            lines,
             count,
             batch_interval,
             ..Self::default()
@@ -72,43 +135,8 @@ impl GeneratorConfig {
         Box::new(self.inner(shutdown, out).boxed().compat())
     }
 
-    async fn inner(self, mut shutdown: ShutdownSignal, mut out: Pipeline) -> Result<(), ()> {
-        let mut batch_interval = self
-            .batch_interval
-            .map(|i| interval(Duration::from_secs_f64(i)));
-        let mut number: usize = 0;
-
-        for _ in 0..self.count {
-            if matches!(futures::poll!(&mut shutdown), Poll::Ready(_)) {
-                break;
-            }
-
-            if let Some(batch_interval) = &mut batch_interval {
-                batch_interval.next().await;
-            }
-
-            let events = self
-                .lines
-                .iter()
-                .map(|line| {
-                    emit!(GeneratorEventProcessed);
-
-                    if self.sequence {
-                        number += 1;
-                        Event::from(&format!("{} {}", number, line)[..])
-                    } else {
-                        Event::from(&line[..])
-                    }
-                })
-                .collect::<Vec<Event>>();
-            let (sink, _) = out
-                .send_all(iter_ok(events))
-                .compat()
-                .await
-                .map_err(|error| error!(message="Error sending generated lines.", %error))?;
-            out = sink;
-        }
-        Ok(())
+    async fn inner(self, shutdown: ShutdownSignal, out: Pipeline) -> Result<(), ()> {
+        self.format.generate(&self, shutdown, out).await
     }
 }
 
