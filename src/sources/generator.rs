@@ -104,12 +104,14 @@ impl GeneratorConfig {
     }
 
     #[allow(dead_code)] // to make check-component-features pass
-    pub fn repeat(lines: Vec<String>, count: usize, batch_interval: Option<f64>) -> Self {
+    pub fn repeat(items: Vec<String>, count: usize, batch_interval: Option<f64>) -> Self {
         Self {
-            lines,
             count,
             batch_interval,
-            ..Self::default()
+            format: OutputFormat::RoundRobin {
+                items,
+                sequence: false,
+            }
         }
     }
 
