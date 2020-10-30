@@ -184,14 +184,22 @@ fn encode_uri(host: &str, database: &str, table: &str) -> crate::Result<Uri> {
     Ok(url.parse::<Uri>().context(super::UriParseError)?)
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Clone)]
 struct ClickhouseRetryLogic {
     inner: HttpRetryLogic,
 }
 
+impl Default for ClickhouseRetryLogic {
+    fn default() -> Self {
+        Self {
+            inner: HttpRetryLogic,
+        }
+    }
+}
+
 impl RetryLogic for ClickhouseRetryLogic {
-    type Response = http::Response<Bytes>;
     type Error = hyper::Error;
+    type Response = http::Response<Bytes>;
 
     fn is_retriable_error(&self, error: &Self::Error) -> bool {
         self.inner.is_retriable_error(error)
@@ -257,7 +265,6 @@ mod integration_tests {
     };
     use futures::{future, stream};
     use serde_json::Value;
-
     use tokio::time::{timeout, Duration};
 
     #[tokio::test]
