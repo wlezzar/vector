@@ -15,30 +15,29 @@ impl InternalEvent for AwsEc2MetadataEventProcessed {
 }
 
 #[derive(Debug)]
-pub struct AwsEc2MetadataRefreshComplete;
+pub struct AwsEc2MetadataRefreshSuccessful;
 
-impl InternalEvent for AwsEc2MetadataRefreshComplete {
+impl InternalEvent for AwsEc2MetadataRefreshSuccessful {
     fn emit_logs(&self) {
         debug!(message = "AWS EC2 metadata refreshed.");
     }
 
     fn emit_metrics(&self) {
-        counter!("metadata_refresh_complete", 1);
+        counter!("metadata_refresh_successful", 1);
     }
 }
 
 #[derive(Debug)]
-pub struct AwsEc2MetadataRequestFailed<'a> {
-    pub path: &'a str,
+pub struct AwsEc2MetadataRefreshFailed {
     pub error: crate::Error,
 }
 
-impl<'a> InternalEvent for AwsEc2MetadataRequestFailed<'a> {
+impl InternalEvent for AwsEc2MetadataRefreshFailed {
     fn emit_logs(&self) {
-        warn!(message = "AWS EC2 metadata request failed.", %self.error, %self.path);
+        warn!(message = "AWS EC2 metadata failed.", error: %self.error);
     }
 
     fn emit_metrics(&self) {
-        counter!("metadata_refresh_request_failed", 1);
+        counter!("metadata_refresh_failed", 1);
     }
 }

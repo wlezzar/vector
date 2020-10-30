@@ -11,7 +11,7 @@ use bytes::Bytes;
 use http::{uri::PathAndQuery, Request, StatusCode, Uri};
 use hyper::{body::to_bytes as body_to_bytes, Body};
 use serde::{Deserialize, Serialize};
-use snafu::ResultExt as _;
+use snafu::{futures::TryFutureExt as _, ResultExt as _};
 use std::{
     collections::{hash_map::RandomState, HashSet},
     error, fmt,
@@ -143,7 +143,7 @@ impl TransformConfig for Ec2Metadata {
         let mut client =
             MetadataClient::new(http_client, host, keys, write, refresh_interval, fields);
 
-        client.refresh_metadata().await;
+        client.refresh_metadata().await?;
 
         tokio::spawn(
             async move {
@@ -232,9 +232,14 @@ impl MetadataClient {
 
     async fn run(&mut self) {
         loop {
-            self.refresh_metadata().await;
-
-            emit!(AwsEc2MetadataRefreshComplete);
+            match self.refresh_metadata().await {
+                Ok(_) => {
+                    emit!(AwsEc2MetadataRefreshSuccessful);
+                }
+                Err(error) => {
+                    emit!(AwsEc2MetadataRequestFailed { error });
+                }
+            }
 
             delay_for(self.refresh_interval).await;
         }
@@ -278,35 +283,13 @@ impl MetadataClient {
         Ok(token)
     }
 
-    pub async fn get_document(&mut self) -> Option<IdentityDocument> {
-        self.get_document_error()
-            .await
+    pub async fn get_document(&mut self) -> Result<IdentityDocument, crate::Error> {
+        self.get_metadata(&DYNAMIC_DOCUMENT)
+            .and_then(|body| serde_json::from_slice(&body[..]).map_err(Into::into))
             .with_context(|| FetchIdentityDocument {})
-            .map_err(|err| {
-                emit!(AwsEc2MetadataRequestFailed {
-                    path: DYNAMIC_DOCUMENT.as_str(),
-                    error: err.into(),
-                });
-            })
-            .ok()
     }
 
-    pub async fn get_metadata(&mut self, path: &PathAndQuery) -> Option<Bytes> {
-        self.get_metadata_error(path)
-            .await
-            .with_context(|| RefreshMetadata {
-                path: path.to_owned(),
-            })
-            .map_err(|err| {
-                emit!(AwsEc2MetadataRequestFailed {
-                    path: path.as_str(),
-                    error: err.into(),
-                });
-            })
-            .ok()
-    }
-
-    pub async fn refresh_metadata(&mut self) {
+    pub async fn refresh_metadata(&mut self) -> Result<(), crate::Error> {
         // Fetch all resources, _then_ add them to the state map.
         if let Some(document) = self.get_document().await {
             if self.fields.contains(AMI_ID_KEY) {
@@ -430,7 +413,7 @@ impl MetadataClient {
         self.state.refresh();
     }
 
-    async fn get_metadata_error(&mut self, path: &PathAndQuery) -> Result<Bytes, crate::Error> {
+    async fn get_metadata(&mut self, path: &PathAndQuery) -> Result<Bytes, crate::Error> {
         let token = self.get_token().await.with_context(|| FetchToken {})?;
 
         let mut parts = self.host.clone().into_parts();
@@ -460,11 +443,6 @@ impl MetadataClient {
         let body = body_to_bytes(res.into_body()).await?;
 
         Ok(body)
-    }
-    async fn get_document_error(&mut self) -> Result<IdentityDocument, crate::Error> {
-        self.get_metadata_error(&DYNAMIC_DOCUMENT)
-            .await
-            .and_then(|body| serde_json::from_slice(&body[..]).map_err(Into::into))
     }
 }
 
